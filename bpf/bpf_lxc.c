@@ -159,8 +159,17 @@ static __always_inline int handle_ipv6_from_lxc(struct __ctx_buff *ctx, __u32 *d
 
 #ifdef ENABLE_PER_PACKET_LB
 	/* Restore ct_state from per packet lb handling in the previous tail call. */
-	lb_ctx_restore_state(ctx, &ct_state_new);
+	lb_ctx_restore_state(ctx, &ct_state_new, &proxy_port);
 	hairpin_flow = ct_state_new.loopback;
+#if defined(ENABLE_L7_LB)
+	if (proxy_port > 0) {
+		/* tuple addresses have been swapped by CT lookup */
+		cilium_dbg3(ctx, DBG_L7_LB, tuple->daddr.p4, tuple->saddr.p4,
+			    bpf_ntohs(proxy_port));
+		verdict = proxy_port;
+		goto skip_policy_enforcement;
+	}
+#endif /* ENABLE_L7_LB */
 #endif /* ENABLE_PER_PACKET_LB */
 
 	/* Check it this is return traffic to an ingress proxy. */
@@ -501,6 +510,7 @@ int tail_handle_ipv6(struct __ctx_buff *ctx)
 		struct ct_state ct_state_new = {};
 		struct lb6_service *svc;
 		struct lb6_key key = {};
+		__u16 proxy_port = 0;
 
 		tuple.nexthdr = ip6->nexthdr;
 		ipv6_addr_copy(&tuple.daddr, (union v6addr *)&ip6->daddr);
@@ -530,6 +540,12 @@ int tail_handle_ipv6(struct __ctx_buff *ctx)
 		 */
 		svc = lb6_lookup_service(&key, is_defined(ENABLE_NODEPORT));
 		if (svc) {
+#if defined(ENABLE_L7_LB)
+			if (lb6_svc_is_l7loadbalancer(svc)) {
+				proxy_port = (__u16)svc->l7_lb_proxy_port;
+				goto skip_service_lookup;
+			}
+#endif /* ENABLE_L7_LB */
 			ret = lb6_local(get_ct_map6(&tuple), ctx, l3_off, l4_off,
 					&csum_off, &key, &tuple, svc, &ct_state_new,
 					false);
@@ -539,7 +555,7 @@ int tail_handle_ipv6(struct __ctx_buff *ctx)
 
 skip_service_lookup:
 		/* Store state to be picked up on the continuation tail call. */
-		lb_ctx_store_state(ctx, &ct_state_new);
+		lb_ctx_store_state(ctx, &ct_state_new, proxy_port);
 	}
 #endif /* ENABLE_PER_PACKET_LB */
 
@@ -612,8 +628,16 @@ static __always_inline int handle_ipv4_from_lxc(struct __ctx_buff *ctx, __u32 *d
 
 #ifdef ENABLE_PER_PACKET_LB
 	/* Restore ct_state from per packet lb handling in the previous tail call. */
-	lb_ctx_restore_state(ctx, &ct_state_new);
+	lb_ctx_restore_state(ctx, &ct_state_new, &proxy_port);
 	hairpin_flow = ct_state_new.loopback;
+#if defined(ENABLE_L7_LB)
+	if (proxy_port > 0) {
+		/* tuple addresses have been swapped by CT lookup */
+		cilium_dbg3(ctx, DBG_L7_LB, tuple.daddr, tuple.saddr, bpf_ntohs(proxy_port));
+		verdict = proxy_port;
+		goto skip_policy_enforcement;
+	}
+#endif /* ENABLE_L7_LB */
 #endif /* ENABLE_PER_PACKET_LB */
 
 	/* Check it this is return traffic to an ingress proxy. */
@@ -1006,6 +1030,7 @@ int tail_handle_ipv4(struct __ctx_buff *ctx)
 		bool has_l4_header;
 		struct lb4_service *svc;
 		struct lb4_key key = {};
+		__u16 proxy_port = 0;
 
 		has_l4_header = ipv4_has_l4_header(ip4);
 		tuple.nexthdr = ip4->protocol;
@@ -1025,6 +1050,12 @@ int tail_handle_ipv4(struct __ctx_buff *ctx)
 
 		svc = lb4_lookup_service(&key, is_defined(ENABLE_NODEPORT));
 		if (svc) {
+#if defined(ENABLE_L7_LB)
+			if (lb4_svc_is_l7loadbalancer(svc)) {
+				proxy_port = (__u16)svc->l7_lb_proxy_port;
+				goto skip_service_lookup;
+			}
+#endif /* ENABLE_L7_LB */
 			ret = lb4_local(get_ct_map4(&tuple), ctx, l3_off, l4_off,
 					&csum_off, &key, &tuple, svc, &ct_state_new,
 					ip4->saddr, has_l4_header, false);
@@ -1033,7 +1064,7 @@ int tail_handle_ipv4(struct __ctx_buff *ctx)
 		}
 skip_service_lookup:
 		/* Store state to be picked up on the continuation tail call. */
-		lb_ctx_store_state(ctx, &ct_state_new);
+		lb_ctx_store_state(ctx, &ct_state_new, proxy_port);
 	}
 #endif /* ENABLE_PER_PACKET_LB */
 

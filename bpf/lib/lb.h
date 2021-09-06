@@ -311,9 +311,29 @@ bool lb6_svc_is_routable(const struct lb6_service *svc)
 }
 
 static __always_inline
-bool lb4_svc_is_localredirect(const struct lb4_service *svc __maybe_unused)
+bool lb4_svc_is_localredirect(const struct lb4_service *svc)
 {
 	return svc->flags2 & SVC_FLAG_LOCALREDIRECT;
+}
+
+static __always_inline
+bool lb4_svc_is_l7loadbalancer(const struct lb4_service *svc __maybe_unused)
+{
+#ifdef ENABLE_L7_LB
+	return svc->flags2 & SVC_FLAG_L7LOADBALANCER;
+#else
+	return false;
+#endif
+}
+
+static __always_inline
+bool lb6_svc_is_l7loadbalancer(const struct lb6_service *svc __maybe_unused)
+{
+#ifdef ENABLE_L7_LB
+	return svc->flags2 & SVC_FLAG_L7LOADBALANCER;
+#else
+	return false;
+#endif
 }
 
 static __always_inline int extract_l4_port(struct __ctx_buff *ctx, __u8 nexthdr,
@@ -530,10 +550,10 @@ struct lb6_service *lb6_lookup_service(struct lb6_key *key,
 	svc = map_lookup_elem(&LB6_SERVICES_MAP_V2, key);
 	if (svc) {
 		if (!scope_switch || !lb6_svc_is_local_scope(svc))
-			return svc->count ? svc : NULL;
+			return (svc->count || lb6_svc_is_l7loadbalancer(svc)) ? svc : NULL;
 		key->scope = LB_LOOKUP_SCOPE_INT;
 		svc = map_lookup_elem(&LB6_SERVICES_MAP_V2, key);
-		if (svc && svc->count)
+		if (svc && (svc->count || lb6_svc_is_l7loadbalancer(svc)))
 			return svc;
 	}
 
@@ -1058,10 +1078,10 @@ struct lb4_service *lb4_lookup_service(struct lb4_key *key,
 	svc = map_lookup_elem(&LB4_SERVICES_MAP_V2, key);
 	if (svc) {
 		if (!scope_switch || !lb4_svc_is_local_scope(svc))
-			return svc->count ? svc : NULL;
+			return (svc->count || lb4_svc_is_l7loadbalancer(svc)) ? svc : NULL;
 		key->scope = LB_LOOKUP_SCOPE_INT;
 		svc = map_lookup_elem(&LB4_SERVICES_MAP_V2, key);
-		if (svc && svc->count)
+		if (svc && (svc->count || lb4_svc_is_l7loadbalancer(svc)))
 			return svc;
 	}
 
@@ -1461,8 +1481,10 @@ drop_no_service:
  * up on the continuation tail call.
  */
 static __always_inline void lb_ctx_store_state(struct __ctx_buff *ctx,
-					       const struct ct_state *state)
+					       const struct ct_state *state,
+					       __u16 proxy_port)
 {
+	ctx_store_meta(ctx, CB_PROXY_MAGIC, (__u32)proxy_port << 16);
 	ctx_store_meta(ctx, CB_BACKEND_ID, state->backend_id);
 	ctx_store_meta(ctx, CB_CT_STATE, (__u32)state->rev_nat_index << 16 | state->loopback);
 }
@@ -1471,9 +1493,13 @@ static __always_inline void lb_ctx_store_state(struct __ctx_buff *ctx,
  * previous tail call.
  */
 static __always_inline void lb_ctx_restore_state(struct __ctx_buff *ctx,
-						 struct ct_state *state)
+						 struct ct_state *state,
+						 __u16 *proxy_port)
 {
 	__u32 meta = ctx_load_meta(ctx, CB_CT_STATE);
+
+	*proxy_port = ctx_load_meta(ctx, CB_PROXY_MAGIC) >> 16;
+	ctx_store_meta(ctx, CB_PROXY_MAGIC, 0);
 
 	state->rev_nat_index = meta >> 16;
 	state->loopback = meta & 1;
