@@ -67,8 +67,7 @@ type monitorNotify interface {
 
 // envoyCache is used to sync Envoy resources to Envoy proxy
 type envoyCache interface {
-	RegisterCRDProxyPort(name string, proxyPort uint16, ingress bool) error
-	UpsertEnvoyResources(context.Context, envoy.Resources, bool) error
+	UpsertEnvoyResources(context.Context, envoy.Resources, envoy.PortAllocator) error
 }
 
 type svcInfo struct {
@@ -86,7 +85,7 @@ type svcInfo struct {
 	svcName                   string
 	svcNamespace              string
 	loadBalancerSourceRanges  []*cidr.CIDR
-	l7LBProxyPort             uint16
+	l7LBProxyPort             uint16 // Non-zero for L7 LB services
 
 	restoredFromDatapath bool
 }
@@ -366,7 +365,7 @@ func (s *Service) upsertEnvoyEndpoints(svc *svcInfo) error {
 	if s.envoyCache != nil {
 		// Using context.TODO() is fine as we do not upsert listener resources here - the
 		// context ends up being used only if listener(s) are included in 'resources'.
-		return s.envoyCache.UpsertEnvoyResources(context.TODO(), resources, false)
+		return s.envoyCache.UpsertEnvoyResources(context.TODO(), resources, nil)
 	}
 	return nil
 }
@@ -713,6 +712,7 @@ func (s *Service) createSVCInfoIfNotExist(p *lb.SVC) (*svcInfo, bool, bool,
 			svcTrafficPolicy:         p.TrafficPolicy,
 			svcHealthCheckNodePort:   p.HealthCheckNodePort,
 			loadBalancerSourceRanges: p.LoadBalancerSourceRanges,
+			l7LBProxyPort:            p.L7LBProxyPort,
 		}
 		s.svcByID[p.Frontend.ID] = svc
 		s.svcByHash[hash] = svc
@@ -761,10 +761,6 @@ func (s *Service) createSVCInfoIfNotExist(p *lb.SVC) (*svcInfo, bool, bool,
 	name := p.Namespace + "/" + p.Name
 	proxyPort, _ := s.l7lbSvcs[name]
 	svc.l7LBProxyPort = proxyPort
-	if proxyPort != 0 && s.envoyCache != nil {
-		err := s.envoyCache.RegisterCRDProxyPort(name, proxyPort, false /* not ingress */)
-		log.Debugf("InstallProxyRules(%s, %d): %s", name, proxyPort, err)
-	}
 
 	return svc, !found, prevSessionAffinity, prevLoadBalancerSourceRanges, nil
 }
@@ -903,7 +899,6 @@ func (s *Service) upsertServiceIntoLBMaps(svc *svcInfo, onlyLocalBackends bool,
 		SessionAffinityTimeoutSec: svc.sessionAffinityTimeoutSec,
 		CheckSourceRange:          checkLBSrcRange,
 		UseMaglev:                 svc.useMaglev(),
-		L7LBProxyPort:             svc.l7LBProxyPort,
 	}
 	if err := s.lbmap.UpsertService(p); err != nil {
 		return err
