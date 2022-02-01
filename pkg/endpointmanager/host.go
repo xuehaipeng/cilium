@@ -48,7 +48,7 @@ func (mgr *EndpointManager) OnUpdateNode(oldNode, newNode *v1.Node,
 
 	nodeEP := mgr.GetHostEndpoint()
 	if nodeEP == nil {
-		log.Error("Host endpoint not found")
+		log.Warn("Host endpoint not found")
 		return nil
 	}
 

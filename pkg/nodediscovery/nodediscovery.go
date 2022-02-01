@@ -59,6 +59,18 @@ type k8sNodeGetter interface {
 	GetK8sNode(ctx context.Context, nodeName string) (*corev1.Node, error)
 }
 
+// The KVStoreNodeUpdater interface is used to provide an abstraction for the
+// NodeStore object logic used to update a node entry in the KV store.
+type KVStoreNodeUpdater interface {
+	UpdateKVNodeEntry(node *nodeTypes.Node) error
+}
+
+// The LocalNode interface is used to scope down direct access to the LocalNode
+// object of a NodeStore.
+type LocalNode interface {
+	GetIPAddresses() []nodeTypes.Address
+}
+
 // NodeDiscovery represents a node discovery action
 type NodeDiscovery struct {
 	Manager               *nodemanager.Manager
@@ -369,6 +381,7 @@ func (n *NodeDiscovery) mutateNodeResource(nodeResource *ciliumv2.CiliumNode) er
 		context.TODO(),
 		nodeTypes.GetName(),
 	)
+
 	switch {
 	case err != nil && k8serrors.IsNotFound(err) && len(nodeResource.ObjectMeta.OwnerReferences) == 0:
 		log.WithError(err).WithField(
@@ -687,4 +700,23 @@ func validatePrimaryCIDR(oldCIDR, newCIDR *cidr.CIDR, family ipam.Family) {
 
 func getInt(i int) *int {
 	return &i
+}
+
+func (nodeDiscovery *NodeDiscovery) UpdateKVNodeEntry(node *nodeTypes.Node) error {
+	if nodeDiscovery.Registrar.SharedStore == nil {
+		return nil
+	}
+
+	if err := nodeDiscovery.Registrar.UpdateLocalKeySync(node); err != nil {
+		return fmt.Errorf("failed to update KV node store entry: %w", err)
+	}
+
+	return nil
+}
+
+func (nodeDiscovery *NodeDiscovery) GetIPAddresses() []nodeTypes.Address {
+	nodeDiscovery.localNodeLock.Lock()
+	defer nodeDiscovery.localNodeLock.Unlock()
+
+	return append([]nodeTypes.Address{}, nodeDiscovery.localNode.IPAddresses...)
 }
