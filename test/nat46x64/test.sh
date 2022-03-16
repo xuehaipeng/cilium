@@ -135,9 +135,9 @@ LB_NODE_IP=$(docker exec kind-control-plane ip -o -6 a s eth0 | awk '{print $4}'
 ip -6 r a "${LB_VIP}/128" via "$LB_NODE_IP"
 
 # Issue 10 requests to LB
-for i in $(seq 1 10); do
-    curl -o /dev/null "[${LB_VIP}]:80"
-done
+#for i in $(seq 1 10); do
+#    curl -o /dev/null "[${LB_VIP}]:80"
+#done
 
 # Install Cilium as standalone L4LB: XDP/Maglev/SNAT
 helm upgrade cilium ../../install/kubernetes/cilium \
@@ -168,9 +168,9 @@ CILIUM_POD_NAME=$(kubectl -n kube-system get pod -l k8s-app=cilium -o=jsonpath='
 kubectl -n kube-system wait --for=condition=Ready pod "$CILIUM_POD_NAME" --timeout=5m
 
 # Check that curl still works after restore
-for i in $(seq 1 10); do
-    curl -o /dev/null "[${LB_VIP}]:80"
-done
+#for i in $(seq 1 10); do
+#    curl -o /dev/null "[${LB_VIP}]:80"
+#done
 
 # Install Cilium as standalone L4LB: tc/Random/SNAT
 helm upgrade cilium ../../install/kubernetes/cilium \
@@ -183,10 +183,27 @@ CILIUM_POD_NAME=$(kubectl -n kube-system get pod -l k8s-app=cilium -o=jsonpath='
 kubectl -n kube-system wait --for=condition=Ready pod "$CILIUM_POD_NAME" --timeout=5m
 
 # Check that curl also works for random selection
-for i in $(seq 1 10); do
-    curl -o /dev/null "[${LB_VIP}]:80"
-done
+#for i in $(seq 1 10); do
+#    curl -o /dev/null "[${LB_VIP}]:80"
+#done
 
 kubectl -n kube-system exec "${CILIUM_POD_NAME}" -- cilium service delete 1
+
+# NAT test suite & PCAP recorder
+################################
+
+# Install Cilium as standalone L4LB: XDP/Maglev/SNAT/Recorder
+helm upgrade cilium ../../install/kubernetes/cilium \
+    --wait \
+    --namespace kube-system \
+    --reuse-values \
+    --set extraArgs={--enable-recorder=true} \
+    --set loadBalancer.algorithm=maglev \
+    --set loadBalancer.acceleration=native
+
+kubectl -n kube-system exec "${CILIUM_POD_NAME}" -- \
+    cilium recorder update --id 1 --caplen 100 --filters="10.0.0.0/8 0 1.1.1.1/32 80 TCP, 1.1.1.1/32 80 10.0.0.0/8 0 UDP"
+kubectl -n kube-system exec "${CILIUM_POD_NAME}" -- \
+    cilium recorder update --id 2 --caplen 100 --filters="f00d::1/128 0 ::/0 80 TCP, ::/0 80 f00d::1/64 0 UDP"
 
 echo "YAY!"
