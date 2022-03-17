@@ -5,8 +5,11 @@ package ipam
 
 import (
 	"fmt"
+	"github.com/cilium/cilium/pkg/annotation"
+	"github.com/cilium/cilium/pkg/k8s/watchers"
 	"math/big"
 	"net"
+	"strings"
 
 	"github.com/cilium/cilium/pkg/ip"
 
@@ -16,9 +19,12 @@ import (
 type hostScopeAllocator struct {
 	allocCIDR *net.IPNet
 	allocator *ipallocator.Range
+
+	// for k8s lister
+	k8swatcher *watchers.K8sWatcher
 }
 
-func newHostScopeAllocator(n *net.IPNet) Allocator {
+func newHostScopeAllocator(n *net.IPNet, k8sEventReg K8sEventRegister) Allocator {
 	cidrRange, err := ipallocator.NewCIDRRange(n)
 	if err != nil {
 		panic(err)
@@ -27,6 +33,7 @@ func newHostScopeAllocator(n *net.IPNet) Allocator {
 		allocCIDR: n,
 		allocator: cidrRange,
 	}
+	a.k8swatcher, _ = k8sEventReg.(*watchers.K8sWatcher)
 
 	return a
 }
@@ -52,6 +59,26 @@ func (h *hostScopeAllocator) Release(ip net.IP) error {
 }
 
 func (h *hostScopeAllocator) AllocateNext(owner string) (*AllocationResult, error) {
+	logger := log.WithField("module", "hostScopeAllocator")
+	if h.k8swatcher != nil {
+		names := strings.Split(owner, "/")
+		pod, err := h.k8swatcher.GetCachedPod(names[0], names[1])
+		if err != nil {
+			return nil, fmt.Errorf("failed to get pod info of %s, %v. ", owner, err)
+		}
+		if pod.Annotations != nil && pod.Annotations[annotation.IpAddr] != "" {
+			logger.Infof("existing IP annotation found, using it, %s", pod.Annotations[annotation.IpAddr])
+			ip := net.ParseIP(pod.Annotations[annotation.IpAddr])
+			if ip == nil {
+				return nil, fmt.Errorf("invalid ip specified: %s. ", pod.Annotations[annotation.IpAddr])
+			}
+			if err = h.allocator.Allocate(ip); err != nil {
+				return nil, fmt.Errorf("the specified ip [%s] is not avaliable, %q", ip.String(), err)
+			}
+			return &AllocationResult{IP: ip}, nil
+		}
+	}
+
 	ip, err := h.allocator.AllocateNext()
 	if err != nil {
 		return nil, err

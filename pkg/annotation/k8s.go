@@ -64,4 +64,7 @@ const (
 	// public key in the CiliumNode CRD that we need to use to encrypt traffic
 	// to that node.
 	WireguardPubKey = Prefix + ".network.wg-pub-key"
+
+	// IpAddr is the fixed IP annotation
+	IpAddr = Prefix + ".cni/ipAddr"
 )
